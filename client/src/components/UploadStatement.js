@@ -1,4 +1,4 @@
-const uploadStatement = async (file, password) => {
+export const uploadStatement = async (file, password) => {
   const formData = new FormData();
   formData.append('statementFile', file);
   formData.append('password', password);
