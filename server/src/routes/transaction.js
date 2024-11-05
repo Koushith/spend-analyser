@@ -29,6 +29,7 @@ const upload = multer({
 // Upload and parse statement
 router.post('/upload-statement', upload.single('statementFile'), async (req, res) => {
   try {
+    console.log(req.body);
     const { password } = req.body;
     if (!req.file) {
       return res.status(400).json({ message: 'No PDF file uploaded' });

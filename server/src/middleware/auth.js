@@ -1,18 +1,11 @@
-import admin from 'firebase-admin';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import User from '../schema/user.js';
 import { firebaseConfig } from '../utils/constatnts.js';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken } from 'firebase/auth';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-admin.initializeApp({
-  projectId: firebaseConfig.projectId,
-  // Optional: you can specify the auth emulator for local development
-  // authEmulator: process.env.FIREBASE_AUTH_EMULATOR_HOST
-});
+// Initialize Firebase with client config
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
 
 export const authenticateUser = async (req, res, next) => {
   try {
@@ -22,27 +15,21 @@ export const authenticateUser = async (req, res, next) => {
     }
 
     const token = authHeader.split('Bearer ')[1];
-    const decodedToken = await admin.auth().verifyIdToken(token);
 
-    const cachedUser = userCache.get(decodedToken.uid);
-    if (cachedUser) {
-      req.user = cachedUser;
-      return next();
-    }
+    // Use signInWithCustomToken instead of verifyToken
+    const userCredential = await signInWithCustomToken(auth, token);
+    const decodedToken = await userCredential.user.getIdTokenResult();
 
-    let user = await User.findOne({ firebaseUid: decodedToken.uid });
+    let user = await User.findOne({ firebaseUid: userCredential.user.uid });
 
     if (!user) {
-      const firebaseUser = await admin.auth().getUser(decodedToken.uid);
       user = await User.create({
-        firebaseUid: decodedToken.uid,
-        email: firebaseUser.email,
-        displayName: firebaseUser.displayName,
-        photoURL: firebaseUser.photoURL,
+        firebaseUid: userCredential.user.uid,
+        email: userCredential.user.email,
+        displayName: userCredential.user.displayName,
+        photoURL: userCredential.user.photoURL,
       });
     }
-
-    userCache.set(decodedToken.uid, user);
 
     req.user = user;
     next();
