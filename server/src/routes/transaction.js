@@ -1,74 +1,106 @@
 import express from 'express';
 import multer from 'multer';
-import PDFParser from 'pdf2json';
-import Transaction from '../schema/transaction.js';
+import { PDFDocument } from 'pdf-lib';
+import pdf from 'pdf-parse';
 import Statement from '../schema/statement.js';
-import { authenticateUser } from '../middleware/auth.js';
+import Transaction from '../schema/transaction.js';
 
 const router = express.Router();
 
-// Apply auth middleware to all routes
-router.use(authenticateUser);
+// Add this before your route handler to log incoming requests
+const logRequest = (req, res, next) => {
+  console.log('Incoming request headers:', req.headers);
+  console.log('Content-Type:', req.headers['content-type']);
+  console.log('Form field names:', Object.keys(req.body));
+  next();
+};
 
-// Configure multer for file upload
+// Configure multer with more detailed options
 const storage = multer.memoryStorage();
 const upload = multer({
-  storage,
+  storage: storage,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB limit
   },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
-      cb(null, true);
-    } else {
-      cb(new Error('Only PDF files are allowed'));
+}).fields([
+  { name: 'statementFile', maxCount: 1 },
+  { name: 'file', maxCount: 1 },
+  { name: 'statement', maxCount: 1 }, // Add this to accept 'statement' field name
+]);
+
+// Modify the route to use the logger and handle Multer errors
+router.post('/upload-statement', logRequest, (req, res) => {
+  upload(req, res, function (err) {
+    console.log('Files received:', req.files); // Log received files
+    console.log('Raw request body:', req.body); // Add this line
+
+    if (err instanceof multer.MulterError) {
+      console.log('Multer error details:', {
+        code: err.code,
+        field: err.field,
+        message: err.message,
+        storageErrors: err.storageErrors,
+      });
+      return res.status(400).json({
+        message: 'File upload error',
+        error: err.message,
+        details: {
+          code: err.code,
+          field: err.field,
+        },
+      });
+    } else if (err) {
+      return res.status(400).json({
+        message: 'Error uploading file',
+        error: err.message,
+      });
     }
-  },
+
+    // Get the file from either field name
+    const uploadedFile = req.files?.statementFile?.[0] || req.files?.file?.[0] || req.files?.statement?.[0];
+    if (!uploadedFile) {
+      return res.status(400).json({ message: 'No PDF file uploaded' });
+    }
+
+    req.file = uploadedFile; // Set the file for compatibility with existing code
+    handleFileUpload(req, res);
+  });
 });
 
-// Upload and parse statement
-router.post('/upload-statement', upload.single('statementFile'), async (req, res) => {
+// Separate function to handle the file processing
+async function handleFileUpload(req, res) {
   try {
-    console.log(req.body);
-    const { password } = req.body;
+    console.log('Request body:', req.body);
+    console.log('File details:', req.file);
+
     if (!req.file) {
       return res.status(400).json({ message: 'No PDF file uploaded' });
     }
 
-    // Create a new PDF parser instance
-    const pdfParser = new PDFParser();
+    const password = req.body.password; // Get the password from the request body
 
-    // Convert buffer to text
-    const parsePromise = new Promise((resolve, reject) => {
-      pdfParser.on('pdfParser_dataReady', (pdfData) => {
-        resolve(pdfData);
-      });
+    // Load the PDF document with the password
+    const pdfDoc = await PDFDocument.load(req.file.buffer, { password });
 
-      pdfParser.on('pdfParser_dataError', (error) => {
-        reject(error);
-      });
-    });
+    // Use pdf-parse to extract text from the uploaded PDF buffer
+    const dataBuffer = req.file.buffer; // Use the buffer from the uploaded file
+    const data = await pdf(dataBuffer); // Extract text using pdf-parse
 
-    // Parse the PDF buffer
-    pdfParser.parseBuffer(req.file.buffer);
+    const fullText = data.text; // Get the extracted text
 
-    // Wait for parsing to complete
-    const pdfData = await parsePromise;
+    // Log the first few lines to help with debugging
+    console.log('First few lines of parsed text:');
+    console.log(fullText.split('\n').slice(0, 5));
 
-    // Convert PDF data to text
-    const textContent = pdfData.Pages.map((page) =>
-      page.Texts.map((text) => decodeURIComponent(text.R[0].T)).join(' ')
-    ).join('\n');
-
-    // Parse the transactions from text content
-    const parsedTransactions = parseTransactions(textContent);
+    // Parse transactions from text content
+    const parsedTransactions = parseTransactions(fullText);
 
     // Create new statement with user reference
     const statement = await Statement.create({
       fileName: req.file.originalname,
       startDate: parsedTransactions.startDate,
       endDate: parsedTransactions.endDate,
-      uploadedBy: req.user._id, // Now we can safely use req.user
+      uploadedBy: req.user._id,
     });
 
     // Create transactions with reference to statement
@@ -89,10 +121,10 @@ router.post('/upload-statement', upload.single('statementFile'), async (req, res
     console.error('Upload statement error:', error);
     res.status(500).json({
       message: 'Error processing statement',
-      error: error.message,
+      error: error.message || error,
     });
   }
-});
+}
 
 function parseTransactions(textContent) {
   const transactions = [];
